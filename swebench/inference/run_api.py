@@ -24,6 +24,7 @@ from datasets import load_dataset, load_from_disk
 from swebench.inference.make_datasets.utils import extract_diff
 from argparse import ArgumentParser
 import logging
+from deepseek_tokenizer import ds_token
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -42,6 +43,8 @@ MODEL_LIMITS = {
     "gpt-4-0613": 8_192,
     "gpt-4-1106-preview": 128_000,
     "gpt-4-0125-preview": 128_000,
+    "gpt-4o-mini-2024-07-18": 128_000,
+    "deepseek/deepseek-r1": 64_000
 }
 
 # The cost per token for each model input.
@@ -61,6 +64,8 @@ MODEL_COST_PER_INPUT = {
     "gpt-4-32k": 0.00006,
     "gpt-4-1106-preview": 0.00001,
     "gpt-4-0125-preview": 0.00001,
+    "gpt-4o-mini-2024-07-18": .15 / 1e6, # $.15 per million
+    "deepseek/deepseek-r1": .55 / 1e6, # https://openrouter.ai/deepseek/deepseek-r1
 }
 
 # The cost per token for each model output.
@@ -80,6 +85,8 @@ MODEL_COST_PER_OUTPUT = {
     "gpt-4-32k": 0.00012,
     "gpt-4-1106-preview": 0.00003,
     "gpt-4-0125-preview": 0.00003,
+    "gpt-4o-mini-2024-07-18": .6 / 1e6, # $.60 per million
+    "deepseek/deepseek-r1": 2.19 / 1e6, # https://openrouter.ai/deepseek/deepseek-r1
 }
 
 # used for azure
