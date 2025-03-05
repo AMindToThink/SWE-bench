@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 import numpy as np
 import tiktoken
 import openai
+from openai import OpenAI
 from anthropic import HUMAN_PROMPT, AI_PROMPT, Anthropic
 from tenacity import (
     retry,
@@ -96,6 +97,7 @@ ENGINES = {
     "gpt-4-32k-0613": "gpt-4-32k",
 }
 
+client = openai
 
 def calc_cost(model_name, input_tokens, output_tokens):
     """
@@ -134,7 +136,7 @@ def call_chat(model_name_or_path, inputs, use_azure, temperature, top_p, **model
     user_message = inputs.split("\n", 1)[1]
     try:
         if use_azure:
-            response = openai.chat.completions.create(
+            response = client.chat.completions.create(
                 engine=ENGINES[model_name_or_path] if use_azure else None,
                 messages=[
                     {"role": "system", "content": system_messages},
@@ -145,7 +147,7 @@ def call_chat(model_name_or_path, inputs, use_azure, temperature, top_p, **model
                 **model_args,
             )
         else:
-            response = openai.chat.completions.create(
+            response = client.chat.completions.create(
                 model=model_name_or_path,
                 messages=[
                     {"role": "system", "content": system_messages},
@@ -176,7 +178,6 @@ def claude_tokenize(string: str, api) -> int:
     """Returns the number of tokens in a text string."""
     num_tokens = api.count_tokens(string)
     return num_tokens
-
 
 def openai_inference(
     test_dataset,
@@ -235,6 +236,78 @@ def openai_inference(
                 output_dict["model_name_or_path"],
                 output_dict["text"],
                 use_azure,
+                temperature,
+                top_p,
+            )
+            completion = response.choices[0].message.content
+            total_cost += cost
+            print(f"Total Cost: {total_cost:.2f}")
+            output_dict["full_output"] = completion
+            output_dict["model_patch"] = extract_diff(completion)
+            print(json.dumps(output_dict), file=f, flush=True)
+            if max_cost is not None and total_cost >= max_cost:
+                print(f"Reached max cost {max_cost}, exiting")
+                break
+
+def deepseek_inference(
+    test_dataset,
+    model_name_or_path,
+    output_file,
+    model_args,
+    existing_ids,
+    max_cost,
+):
+    """
+    Runs inference on a dataset using the openai API.
+
+    Args:
+    test_dataset (datasets.Dataset): The dataset to run inference on.
+    model_name_or_path (str): The name or path of the model to use.
+    output_file (str): The path to the output file.
+    model_args (dict): A dictionary of model arguments.
+    existing_ids (set): A set of ids that have already been processed.
+    max_cost (float): The maximum cost to spend on inference.
+    """
+    assert model_name_or_path.startswith('gpt') or model_name_or_path.startswith('deepseek')
+    encoding = ds_token
+    test_dataset = test_dataset.filter(
+        lambda x: gpt_tokenize(x["text"], encoding) <= MODEL_LIMITS[model_name_or_path],
+        desc="Filtering",
+        load_from_cache_file=False,
+    )
+
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", None)
+    if openrouter_key is None:
+        raise ValueError(
+            "Must provide an api key. Expected in OPENROUTER_API_KEY environment variable for deepseek models."
+        )
+    global client
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=openrouter_key
+    )
+    print(f"Using OpenRouter key {'*' * max(0, len(openrouter_key) - 5) + openrouter_key[-5:]}")
+    
+    temperature = model_args.pop("temperature", 0.2)
+    top_p = model_args.pop("top_p", 0.95 if temperature > 0 else 1)
+    print(f"Using temperature={temperature}, top_p={top_p}")
+    basic_args = {
+        "model_name_or_path": model_name_or_path,
+    }
+    total_cost = 0
+    print(f"Filtered to {len(test_dataset)} instances")
+    with open(output_file, "a+") as f:
+        for datum in tqdm(test_dataset, desc=f"Inference for {model_name_or_path}"):
+            instance_id = datum["instance_id"]
+            if instance_id in existing_ids:
+                continue
+            output_dict = {"instance_id": instance_id}
+            output_dict.update(basic_args)
+            output_dict["text"] = f"{datum['text']}\n\n"
+            response, cost = call_chat(
+                output_dict["model_name_or_path"],
+                output_dict["text"],
+                False,  # use_azure parameter
                 temperature,
                 top_p,
             )
@@ -510,6 +583,9 @@ def main(
         anthropic_inference(**inference_args)
     elif model_name_or_path.startswith("gpt"):
         openai_inference(**inference_args)
+    elif model_name_or_path.startswith('deepseek'):
+        print("doing deepseek inference")
+        deepseek_inference(**inference_args)
     else:
         raise ValueError(f"Invalid model name or path {model_name_or_path}")
     logger.info("Done!")
